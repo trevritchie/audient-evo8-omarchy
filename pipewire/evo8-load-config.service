@@ -1,0 +1,7 @@
+[Unit]
+Description=Load Audient EVO 8 configuration on USB hotplug
+After=pipewire.service wireplumber.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/evo8-setup.sh
