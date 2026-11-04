@@ -63,4 +63,18 @@ fi
 # 4. Set default sink and source by exact node name
 pactl set-default-sink "$SINK" 2>/dev/null || true
 pactl set-default-source "$SOURCE" 2>/dev/null || true
+
+# 5. Apply saved Loopback Source routing (defaults to Main Output 1+2 / Headphones)
+if command -v evo8-audio >/dev/null 2>&1; then
+    evo8-audio loopback apply --quiet 2>/dev/null || true
+fi
+
+# 6. Move any active app streams stranded on easyeffects_sink onto evo8_main_output
+ee_id=$(pactl list sinks short 2>/dev/null | awk '$2 == "easyeffects_sink" {print $1}')
+if [[ -n "${ee_id:-}" ]]; then
+    for si in $(pactl list sink-inputs short 2>/dev/null | awk -v ee="$ee_id" '$2 == ee {print $1}'); do
+        pactl move-sink-input "$si" "$SINK" 2>/dev/null || true
+    done
+fi
+
 echo "Default sink: $SINK | Default source: $SOURCE"

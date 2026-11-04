@@ -86,12 +86,40 @@
     "description": "Toggle zero-latency hardware monitoring for Input 4",
     "action": "~/.local/bin/evo8-audio monitor 4 toggle"
   },
-  "trigger.evo8.loopback": {
+  "trigger.evo8.loopback_main": {
+    "icon": "󰋋",
+    "label": "Loopback Source: Main 1+2 (YouTube / Headphones)",
+    "aliases": ["loopback main", "record youtube", "record headphones", "evo8 loopback"],
+    "description": "Record whatever plays out of Main Output 1+2 into EVO8 Loopback",
+    "action": "~/.local/bin/evo8-audio loopback main"
+  },
+  "trigger.evo8.loopback_out34": {
     "icon": "󰑖",
-    "label": "Loopback Bus Routing",
-    "aliases": ["evo8 loopback"],
-    "description": "Toggle hardware loopback bus (OUT 5/6 -> IN 5/6)",
-    "action": "~/.local/bin/evo8-audio loopback toggle"
+    "label": "Loopback Source: Line Output 3+4",
+    "aliases": ["loopback 3+4", "loopback out34"],
+    "description": "Record playback sent to Line Output 3+4 into EVO8 Loopback",
+    "action": "~/.local/bin/evo8-audio loopback out3_4"
+  },
+  "trigger.evo8.loopback_send56": {
+    "icon": "󰑖",
+    "label": "Loopback Source: Dedicated Send 5+6",
+    "aliases": ["loopback send", "loopback 5+6"],
+    "description": "Record only apps routed to EVO8 Loopback Output 5+6",
+    "action": "~/.local/bin/evo8-audio loopback send5_6"
+  },
+  "trigger.evo8.loopback_hwmix": {
+    "icon": "🎛",
+    "label": "Loopback Source: Hardware Mix (Mics + PC)",
+    "aliases": ["loopback hwmix", "loopback master mix"],
+    "description": "Record EVO 8 internal MU60 hardware mixer (Mics 1-4 + PC)",
+    "action": "~/.local/bin/evo8-audio loopback hwmix"
+  },
+  "trigger.evo8.loopback_off": {
+    "icon": "󰖁",
+    "label": "Loopback Source: Off (Muted)",
+    "aliases": ["loopback off", "mute loopback"],
+    "description": "Mute EVO8 Loopback capture input",
+    "action": "~/.local/bin/evo8-audio loopback off"
   },
   "trigger.evo8.buffer64": {
     "icon": "󰓅",

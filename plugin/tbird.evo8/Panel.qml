@@ -22,11 +22,22 @@ Panel {
   property real out2Vol: -32.5
   property bool out2Mute: false
   property bool loopbackOn: true
+  property string loopbackSource: "main"
+  property string loopbackSourceLabel: "Main 1|2 (Headphones)"
+  property int loopbackLevel: 100
   property var inputs: [
     { index: 1, gain: -8.0, mute: false, phantom: false, monitor_on: false, monitor_db: 0.0 },
     { index: 2, gain: -8.0, mute: false, phantom: false, monitor_on: false, monitor_db: 0.0 },
     { index: 3, gain: -8.0, mute: false, phantom: false, monitor_on: false, monitor_db: 0.0 },
     { index: 4, gain: -8.0, mute: false, phantom: false, monitor_on: false, monitor_db: 0.0 }
+  ]
+
+  readonly property var loopbackOptions: [
+    { label: "Main 1|2", value: "main" },
+    { label: "Out 3|4", value: "out3_4" },
+    { label: "Send 5|6", value: "send5_6" },
+    { label: "HW Mix", value: "hwmix" },
+    { label: "Off", value: "off" }
   ]
 
   readonly property var bufferOptions: [
@@ -87,6 +98,9 @@ Panel {
         root.out2Mute = !!data.output2.mute
       }
       root.loopbackOn = !!data.loopback_on
+      if (data.loopback_source) root.loopbackSource = data.loopback_source
+      if (data.loopback_source_label) root.loopbackSourceLabel = data.loopback_source_label
+      if (data.loopback_level !== undefined) root.loopbackLevel = data.loopback_level
       if (data.inputs && data.inputs.length === 4) {
         root.inputs = data.inputs
       }
@@ -611,28 +625,93 @@ Panel {
               }
             }
 
-            // Loopback Bus
+            // Loopback Source Selector & Capture Level
+            PanelSeparator { foreground: root.bar.foreground }
+
             Item {
               width: parent.width
-              implicitHeight: Math.max(loopLabel.implicitHeight, loopToggle.implicitHeight)
+              implicitHeight: loopHeader.implicitHeight
 
-              Text {
-                id: loopLabel
-                text: "Loopback Bus (OUT 5|6 -> IN 5|6)"
-                color: root.bar.foreground
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.bodySmall
+              PanelSectionHeader {
+                id: loopHeader
+                text: "LOOPBACK RECORDING SOURCE"
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
                 anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
               }
 
-              ToggleSwitch {
-                id: loopToggle
-                checked: root.loopbackOn
-                foreground: root.bar.foreground
+              Text {
+                text: "Input: EVO8 Loopback"
+                color: Qt.darker(root.bar.foreground, 1.5)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                onToggled: root.runCmd(["loopback", "toggle", "--quiet"])
+              }
+            }
+
+            Row {
+              id: loopRow
+              width: parent.width
+              spacing: Style.space(4)
+              readonly property real cellWidth: (width - spacing * (root.loopbackOptions.length - 1)) / root.loopbackOptions.length
+
+              Repeater {
+                model: root.loopbackOptions
+                Button {
+                  required property var modelData
+                  width: loopRow.cellWidth
+                  text: modelData.label
+                  fontSize: Style.font.caption
+                  foreground: root.bar.foreground
+                  fontFamily: root.bar.fontFamily
+                  horizontalPadding: Style.space(2)
+                  verticalPadding: Style.space(5)
+                  bordered: true
+                  active: root.loopbackSource === modelData.value
+                  onClicked: root.runCmd(["loopback", modelData.value, "--quiet"])
+                }
+              }
+            }
+
+            Column {
+              visible: root.loopbackOn
+              width: parent.width
+              spacing: Style.space(4)
+
+              Item {
+                width: parent.width
+                implicitHeight: loopLvlText.implicitHeight
+
+                Text {
+                  id: loopLvlText
+                  text: "Source: " + root.loopbackSourceLabel
+                  color: root.bar.foreground
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  anchors.left: parent.left
+                }
+
+                Text {
+                  text: "Level: " + root.loopbackLevel + "%"
+                  color: Qt.darker(root.bar.foreground, 1.4)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  anchors.right: parent.right
+                }
+              }
+
+              PanelSlider {
+                bar: root.bar
+                width: parent.width
+                minimum: 0
+                maximum: 150
+                step: 5
+                value: root.loopbackLevel
+                onMoved: function(v) {
+                  root.runCmd(["loopback", "level", "--level", String(Math.round(v)), "--quiet"])
+                }
               }
             }
           }

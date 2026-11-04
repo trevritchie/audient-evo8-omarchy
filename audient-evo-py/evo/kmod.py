@@ -1,8 +1,14 @@
 """Wrapper for /dev/evo* ioctl - raw USB control transfers via kernel module."""
 
+import errno
 import fcntl
+import glob
+import os
 import struct
+import time
 from typing import BinaryIO
+
+_USBDEVFS_RESET = (ord("U") << 8) | 20
 
 # Must match struct evo_ctrl_xfer in evo_raw.c
 # Layout: u8 bRequestType, u8 bRequest, u16 wValue, u16 wIndex, u16 wLength, u8[256] data
@@ -72,3 +78,24 @@ def get_cur(fd: BinaryIO, wValue: int, wIndex: int, length: int) -> bytes:
 def set_cur(fd: BinaryIO, wValue: int, wIndex: int, data: bytes) -> None:
     """SET_CUR request - write value"""
     ctrl_transfer(fd, REQTYPE_SET, REQ_CUR, wValue, wIndex, data=data)
+
+
+def reset_usb_device(usb_pid: int = 0x0007) -> bool:
+    """Perform a USBDEVFS_RESET on the Audient EVO USB device to clear control pipe stalls."""
+    pid_hex = f"{usb_pid:04x}"
+    for p in glob.glob("/sys/bus/usb/devices/*/idProduct"):
+        d = os.path.dirname(p)
+        try:
+            vid = open(os.path.join(d, "idVendor")).read().strip().lower()
+            pid = open(os.path.join(d, "idProduct")).read().strip().lower()
+            if vid == "2708" and pid == pid_hex:
+                bus = int(open(os.path.join(d, "busnum")).read().strip())
+                dev = int(open(os.path.join(d, "devnum")).read().strip())
+                usb_path = f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+                with open(usb_path, "wb") as ufd:
+                    fcntl.ioctl(ufd, _USBDEVFS_RESET, 0)
+                time.sleep(0.5)
+                return True
+        except OSError:
+            continue
+    return False

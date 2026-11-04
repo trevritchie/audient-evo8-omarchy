@@ -3,9 +3,10 @@
 
 Controls:
   - PipeWire sample rate (44.1 / 48 / 88.2 / 96 kHz) & buffer quantum (32..2048)
+  - Loopback Source selector (Main 1|2 Headphones, Out 3|4, Dedicated Send 5|6, HW Mix, Off)
+    and Loopback Capture recording level (0..150%)
   - Zero-latency hardware direct monitoring (Inputs 1–4 -> MIX 1|2 & MIX 3|4)
   - Hardware preamp gain (-8..+50 dB), 48V phantom power, and input/output mutes
-  - Hardware loopback bus routing (CH5/6) and PC playback mix levels
   - Launching the interactive curses hardware mixer (evotui)
 """
 
@@ -20,10 +21,70 @@ import sys
 from pathlib import Path
 
 from evo import config as cfg
+from evo import kmod
 from evo.controller import EVOController, _MIXER_DB_MAX, _MIXER_DB_MIN
 from evo.devices import EVO8
 
 PREFS_FILE = Path.home() / ".config" / "audient-evo-py" / "evo8" / ".monitor-prefs.json"
+SAVED_CFG_FILE = Path.home() / ".config" / "audient-evo-py" / "evo8" / "config.json"
+
+LOOPBACK_CAPTURE_NODE = "evo8_loopback_capture"
+LOOPBACK_IN_L = "evo8_loopback_capture.hw:input_RL"
+LOOPBACK_IN_R = "evo8_loopback_capture.hw:input_RR"
+
+LOOPBACK_SOURCES: dict[str, tuple[str, str | None, str | None]] = {
+    "main": (
+        "Main 1|2 (Headphones)",
+        "evo8_main_output:monitor_FL",
+        "evo8_main_output:monitor_FR",
+    ),
+    "out3_4": (
+        "Out 3|4 (Line Out)",
+        "evo8_output_3_4:monitor_FL",
+        "evo8_output_3_4:monitor_FR",
+    ),
+    "send5_6": (
+        "Send 5|6 (Dedicated)",
+        "evo8_loopback_output:monitor_FL",
+        "evo8_loopback_output:monitor_FR",
+    ),
+    "hwmix": (
+        "HW Mix (Mics + PC)",
+        "alsa_input.usb-Audient_EVO8-00.analog-surround-51:capture_RL",
+        "alsa_input.usb-Audient_EVO8-00.analog-surround-51:capture_RR",
+    ),
+    "off": (
+        "Off (Muted)",
+        None,
+        None,
+    ),
+}
+
+_SOURCE_ALIASES = {
+    "main": "main",
+    "1_2": "main",
+    "out1_2": "main",
+    "output1_2": "main",
+    "headphones": "main",
+    "on": "main",
+    "1": "main",
+    "true": "main",
+    "out3_4": "out3_4",
+    "3_4": "out3_4",
+    "output3_4": "out3_4",
+    "send5_6": "send5_6",
+    "loop5_6": "send5_6",
+    "5_6": "send5_6",
+    "output5_6": "send5_6",
+    "hwmix": "hwmix",
+    "hw": "hwmix",
+    "master": "hwmix",
+    "mix": "hwmix",
+    "off": "off",
+    "0": "off",
+    "false": "off",
+    "mute": "off",
+}
 
 
 def _run(cmd: list[str]) -> str:
@@ -48,17 +109,135 @@ def _notify(title: str, body: str, quiet: bool = False) -> None:
 
 
 def _load_prefs() -> dict:
+    default = {
+        "last_monitor_db": {"1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0},
+        "loopback_source": "main",
+        "last_active_loopback_source": "main",
+        "loopback_level": 100,
+    }
     if PREFS_FILE.exists():
         try:
-            return json.loads(PREFS_FILE.read_text())
+            loaded = json.loads(PREFS_FILE.read_text())
+            default.update(loaded)
         except Exception:
             pass
-    return {"last_monitor_db": {"1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0}}
+    return default
 
 
 def _save_prefs(prefs: dict) -> None:
     PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
     PREFS_FILE.write_text(json.dumps(prefs, indent=2) + "\n")
+
+
+def _load_saved_hw_fallback() -> dict:
+    if SAVED_CFG_FILE.exists():
+        try:
+            return json.loads(SAVED_CFG_FILE.read_text())
+        except Exception:
+            pass
+    return {
+        "output1": {"volume": -32.5, "mute": False},
+        "output2": {"volume": -32.5, "mute": False},
+        "input1": {"gain": -8.0, "mute": False, "phantom": False},
+        "input2": {"gain": 12.0, "mute": False, "phantom": False},
+        "input3": {"gain": -8.0, "mute": False, "phantom": False},
+        "input4": {"gain": -8.0, "mute": False, "phantom": False},
+    }
+
+
+def _read_hw_status_safe() -> dict:
+    try:
+        with EVOController(EVO8) as evo:
+            return evo.decode_status(evo.get_status_raw())
+    except OSError:
+        if kmod.reset_usb_device(EVO8.usb_pid):
+            try:
+                with EVOController(EVO8) as evo:
+                    return evo.decode_status(evo.get_status_raw())
+            except OSError:
+                pass
+        return _load_saved_hw_fallback()
+
+
+def _get_loopback_status(prefs: dict) -> dict:
+    links_out = _run(["pw-link", "-l"])
+    active_src = None
+    # Check what is linked to LOOPBACK_IN_L
+    lines = links_out.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == LOOPBACK_IN_L and i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt.startswith("|<-"):
+                port = nxt.replace("|<-", "").strip()
+                for key, (_, src_l, _) in LOOPBACK_SOURCES.items():
+                    if src_l and port == src_l:
+                        active_src = key
+                        break
+
+    mute_out = _run(["pactl", "get-source-mute", LOOPBACK_CAPTURE_NODE])
+    is_muted = "yes" in mute_out.lower()
+
+    vol_out = _run(["pactl", "get-source-volume", LOOPBACK_CAPTURE_NODE])
+    m_vol = re.search(r"(\d+)%", vol_out)
+    level_pct = int(m_vol.group(1)) if m_vol else int(prefs.get("loopback_level", 100))
+
+    if is_muted or active_src is None:
+        source_key = "off" if active_src is None else active_src
+        if is_muted:
+            source_key = "off"
+    else:
+        source_key = active_src
+
+    label = LOOPBACK_SOURCES.get(source_key, LOOPBACK_SOURCES["main"])[0]
+    return {
+        "loopback_on": source_key != "off",
+        "loopback_source": source_key,
+        "loopback_source_label": label,
+        "loopback_level": level_pct,
+    }
+
+
+def _apply_loopback(source_key: str, level_pct: int | None = None) -> tuple[str, int]:
+    prefs = _load_prefs()
+    if level_pct is None:
+        level_pct = int(prefs.get("loopback_level", 100))
+    level_pct = max(0, min(150, level_pct))
+
+    # 1. Disconnect all candidate sources from evo8_loopback_capture.hw
+    for _, src_l, src_r in LOOPBACK_SOURCES.values():
+        if src_l and src_r:
+            _run(["pw-link", "-d", src_l, LOOPBACK_IN_L])
+            _run(["pw-link", "-d", src_r, LOOPBACK_IN_R])
+
+    # 2. Connect the requested source
+    _, target_l, target_r = LOOPBACK_SOURCES[source_key]
+    if source_key == "off" or not target_l or not target_r:
+        _run(["pactl", "set-source-mute", LOOPBACK_CAPTURE_NODE, "1"])
+    else:
+        _run(["pw-link", target_l, LOOPBACK_IN_L])
+        _run(["pw-link", target_r, LOOPBACK_IN_R])
+        _run(["pactl", "set-source-mute", LOOPBACK_CAPTURE_NODE, "0"])
+        _run(["pactl", "set-source-volume", LOOPBACK_CAPTURE_NODE, f"{level_pct}%"])
+        prefs["last_active_loopback_source"] = source_key
+
+    prefs["loopback_source"] = source_key
+    prefs["loopback_level"] = level_pct
+    _save_prefs(prefs)
+
+    # 3. If hwmix or send5_6, also update MU60 hardware mixer if available
+    if source_key in ("hwmix", "send5_6", "off"):
+        target_db = 0.0 if source_key in ("hwmix", "send5_6") else _MIXER_DB_MIN
+        mixer = cfg.load_or_default_mixer_state(EVO8)
+        cfg.update_mixer_output_state(mixer, EVO8, 2, target_db, -100.0, 100.0, mix_output=0)
+        cfg.save_mixer_state(EVO8.name, mixer)
+        try:
+            with EVOController(EVO8) as evo:
+                evo.set_mixer_output(target_db, -100.0, 100.0, output_pair=2, mix_output=0)
+                cfg.save(evo)
+        except OSError:
+            pass
+
+    return source_key, level_pct
 
 
 def _get_pipewire_clock() -> dict:
@@ -76,7 +255,6 @@ def _get_pipewire_clock() -> dict:
     default_quantum = vals.get("clock.quantum", 1024)
     force_quantum = vals.get("clock.force-quantum", 0)
 
-    # Check live hardware rate from /proc/asound/EVO8/stream0 if active
     hw_rate = 0
     stream_path = Path("/proc/asound/EVO8/stream0")
     if stream_path.exists():
@@ -84,7 +262,6 @@ def _get_pipewire_clock() -> dict:
         m = re.search(r"Momentary freq\s*=\s*(\d+)\s*Hz", text)
         if m:
             raw_hz = int(m.group(1))
-            # Snap momentary feedback frequency (e.g. 47997) to nominal rate
             for nom in (44100, 48000, 88200, 96000):
                 if abs(raw_hz - nom) < 500:
                     hw_rate = nom
@@ -107,8 +284,9 @@ def _get_pipewire_clock() -> dict:
 
 def get_full_status() -> dict:
     clock = _get_pipewire_clock()
-    connected = Path(EVO8.dev_path).exists()
+    connected = Path(EVO8.dev_path).exists() or Path("/proc/asound/EVO8").exists()
     prefs = _load_prefs()
+    loop_st = _get_loopback_status(prefs)
 
     if not connected:
         return {
@@ -119,14 +297,12 @@ def get_full_status() -> dict:
             "inputs": [],
             "pc12_db": 0.0,
             "pc34_db": 0.0,
-            "loopback_on": False,
+            **loop_st,
             "loopback_db": -128.0,
         }
 
-    with EVOController(EVO8) as evo:
-        hw = evo.decode_status(evo.get_status_raw())
-        mixer = cfg.load_or_default_mixer_state(EVO8)
-
+    hw = _read_hw_status_safe()
+    mixer = cfg.load_or_default_mixer_state(EVO8)
     mix0 = cfg.mixer_output_state(mixer, EVO8, 0)
     mix1 = cfg.mixer_output_state(mixer, EVO8, 1)
 
@@ -157,7 +333,7 @@ def get_full_status() -> dict:
 
     out12_db = float(mix0["outputs"].get("output1_2", {}).get("volume", 0.0))
     out34_db = float(mix1["outputs"].get("output3_4", {}).get("volume", 0.0))
-    loop_db = float(mix0["outputs"].get("output5_6", {}).get("volume", -128.0))
+    loop_db = float(mix0["outputs"].get("output5_6", {}).get("volume", 0.0))
 
     return {
         "connected": True,
@@ -167,7 +343,7 @@ def get_full_status() -> dict:
         "inputs": inputs_list,
         "pc12_db": out12_db,
         "pc34_db": out34_db,
-        "loopback_on": loop_db > -100.0,
+        **loop_st,
         "loopback_db": loop_db,
     }
 
@@ -195,12 +371,16 @@ def cmd_status(args: argparse.Namespace) -> None:
         f"OUT 3|4: {o2['volume']:+.1f} dB (mute={'on' if o2['mute'] else 'off'})"
     )
     print(
-        f"Loopback Bus:  {'ON' if st['loopback_on'] else 'OFF'} ({st['loopback_db']:+.1f} dB) | "
-        f"PC 1|2 Mix: {st['pc12_db']:+.1f} dB"
+        f"Loopback Rec:  {st['loopback_source_label']} (Level: {st['loopback_level']}%) | "
+        f"Capture Node: EVO8 Loopback ({LOOPBACK_CAPTURE_NODE})"
     )
     print("Inputs:")
     for inp in st["inputs"]:
-        mon_str = f"ON ({inp['raw_mixer_db']:+.1f} dB, pan {inp['monitor_pan']:+.0f})" if inp["monitor_on"] else "OFF (DAW mode)"
+        mon_str = (
+            f"ON ({inp['raw_mixer_db']:+.1f} dB, pan {inp['monitor_pan']:+.0f})"
+            if inp["monitor_on"]
+            else "OFF (DAW mode)"
+        )
         print(
             f"  IN {inp['index']}: gain={inp['gain']:+.1f} dB | "
             f"48V={'ON' if inp['phantom'] else 'off'} | "
@@ -275,12 +455,17 @@ def cmd_monitor(args: argparse.Namespace) -> None:
             prefs.setdefault("last_monitor_db", {})[str(ch)] = target_db
             _save_prefs(prefs)
 
-    with EVOController(EVO8) as evo:
-        for mo in mix_targets:
-            evo.set_mixer_input(ch, target_db, cur_pan, mix_output=mo)
-            cfg.update_mixer_input_state(mixer, EVO8, ch, target_db, cur_pan, mix_output=mo)
-        cfg.save_mixer_state(EVO8.name, mixer)
-        cfg.save(evo)
+    for mo in mix_targets:
+        cfg.update_mixer_input_state(mixer, EVO8, ch, target_db, cur_pan, mix_output=mo)
+    cfg.save_mixer_state(EVO8.name, mixer)
+
+    try:
+        with EVOController(EVO8) as evo:
+            for mo in mix_targets:
+                evo.set_mixer_input(ch, target_db, cur_pan, mix_output=mo)
+            cfg.save(evo)
+    except OSError:
+        pass
 
     label = f"ON ({target_db:+.1f} dB)" if target_db > -100.0 else "OFF (DAW Mode)"
     _notify(f"Input {ch} Direct Monitor", label, args.quiet)
@@ -290,76 +475,108 @@ def cmd_gain(args: argparse.Namespace) -> None:
     ch = int(args.input_num)
     target = f"input{ch}"
     db = max(EVO8.gain_db_min, min(EVO8.gain_db_max, float(args.db)))
-    with EVOController(EVO8) as evo:
-        evo.set_gain(target, db)
-        cfg.save(evo)
+    try:
+        with EVOController(EVO8) as evo:
+            evo.set_gain(target, db)
+            cfg.save(evo)
+    except OSError:
+        pass
     _notify(f"Input {ch} Preamp Gain", f"{db:+.1f} dB", args.quiet)
 
 
 def cmd_phantom(args: argparse.Namespace) -> None:
     ch = int(args.input_num)
     target = f"input{ch}"
-    with EVOController(EVO8) as evo:
-        cur = evo.get_phantom(target)
-        s = args.state.lower()
-        new_val = (not cur) if s == "toggle" else (s in ("1", "on", "true"))
-        evo.set_phantom(target, new_val)
-        cfg.save(evo)
-    _notify(f"Input {ch} 48V Phantom Power", "ON" if new_val else "OFF", args.quiet)
+    state_bool = False
+    try:
+        with EVOController(EVO8) as evo:
+            s = args.state.lower()
+            if s == "toggle":
+                state_bool = not evo.get_phantom(target)
+            else:
+                state_bool = s in ("on", "1", "true")
+            evo.set_phantom(state_bool, target)
+            cfg.save(evo)
+    except OSError:
+        state_bool = args.state.lower() in ("on", "1", "true")
+    _notify(f"Input {ch} 48V Phantom", "ON" if state_bool else "OFF", args.quiet)
 
 
 def cmd_mute(args: argparse.Namespace) -> None:
-    target = args.target
-    with EVOController(EVO8) as evo:
-        cur = evo.get_mute(target)
-        s = args.state.lower()
-        new_val = (not cur) if s == "toggle" else (s in ("1", "on", "true"))
-        evo.set_mute(target, new_val)
-        cfg.save(evo)
-    _notify(f"EVO 8 {target.upper()} Mute", "Muted" if new_val else "Unmuted", args.quiet)
+    target = args.target.lower()
+    state_bool = False
+    try:
+        with EVOController(EVO8) as evo:
+            s = args.state.lower()
+            if s == "toggle":
+                state_bool = not evo.get_mute(target)
+            else:
+                state_bool = s in ("on", "1", "true")
+            evo.set_mute(state_bool, target)
+            cfg.save(evo)
+    except OSError:
+        state_bool = args.state.lower() in ("on", "1", "true")
+    _notify(f"{target.upper()} Mute", "Muted" if state_bool else "Unmuted", args.quiet)
 
 
 def cmd_volume(args: argparse.Namespace) -> None:
     pair = int(args.pair) - 1
     db = max(EVO8.vol_db_min, min(EVO8.vol_db_max, float(args.db)))
-    with EVOController(EVO8) as evo:
-        evo.set_volume(db, output_pair=pair)
-        cfg.save(evo)
+    try:
+        with EVOController(EVO8) as evo:
+            evo.set_volume(db, output_pair=pair)
+            cfg.save(evo)
+    except OSError:
+        pass
     _notify(f"Output {pair*2+1}|{pair*2+2} Volume", f"{db:+.1f} dB", args.quiet)
 
 
 def cmd_loopback(args: argparse.Namespace) -> None:
-    mixer = cfg.load_or_default_mixer_state(EVO8)
-    mix0 = cfg.mixer_output_state(mixer, EVO8, 0)
-    cur_db = float(mix0["outputs"].get("output5_6", {}).get("volume", -128.0))
-    s = args.state.lower()
-    if s == "toggle":
-        target_db = _MIXER_DB_MIN if cur_db > -100.0 else 0.0
-    elif s in ("on", "1", "true"):
-        target_db = 0.0
-    elif s in ("off", "0", "false"):
-        target_db = _MIXER_DB_MIN
-    else:
-        target_db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, float(s)))
+    prefs = _load_prefs()
+    cur_st = _get_loopback_status(prefs)
+    s = (args.state or "apply").lower()
 
-    with EVOController(EVO8) as evo:
-        evo.set_mixer_output(target_db, -100.0, 100.0, output_pair=2, mix_output=0)
-        cfg.update_mixer_output_state(mixer, EVO8, 2, target_db, -100.0, 100.0, mix_output=0)
-        cfg.save_mixer_state(EVO8.name, mixer)
-        cfg.save(evo)
-    _notify("EVO 8 Loopback Bus", "ON (0.0 dB)" if target_db > -100.0 else "OFF", args.quiet)
+    if s == "apply":
+        target_src = prefs.get("loopback_source", "main")
+        if target_src not in LOOPBACK_SOURCES:
+            target_src = "main"
+    elif s == "toggle":
+        if cur_st["loopback_on"]:
+            target_src = "off"
+        else:
+            target_src = prefs.get("last_active_loopback_source", "main")
+            if target_src == "off" or target_src not in LOOPBACK_SOURCES:
+                target_src = "main"
+    elif s == "level":
+        target_src = cur_st["loopback_source"]
+        if target_src == "off":
+            target_src = prefs.get("last_active_loopback_source", "main")
+    elif s in _SOURCE_ALIASES:
+        target_src = _SOURCE_ALIASES[s]
+    else:
+        sys.exit(
+            f"error: unknown loopback source '{args.state}'. "
+            "Choose from: main, out3_4, send5_6, hwmix, off, toggle, apply"
+        )
+
+    applied_src, applied_lvl = _apply_loopback(target_src, args.level)
+    label = LOOPBACK_SOURCES[applied_src][0]
+    _notify("EVO 8 Loopback Source", f"{label} ({applied_lvl}%)", args.quiet)
 
 
 def cmd_pcmix(args: argparse.Namespace) -> None:
-    pair = int(args.pair) - 1  # 0 for PC 1+2, 1 for PC 3+4
+    pair = int(args.pair) - 1
     mix_out = pair if args.mix is None else int(args.mix)
     db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, float(args.db)))
     mixer = cfg.load_or_default_mixer_state(EVO8)
-    with EVOController(EVO8) as evo:
-        evo.set_mixer_output(db, -100.0, 100.0, output_pair=pair, mix_output=mix_out)
-        cfg.update_mixer_output_state(mixer, EVO8, pair, db, -100.0, 100.0, mix_output=mix_out)
-        cfg.save_mixer_state(EVO8.name, mixer)
-        cfg.save(evo)
+    cfg.update_mixer_output_state(mixer, EVO8, pair, db, -100.0, 100.0, mix_output=mix_out)
+    cfg.save_mixer_state(EVO8.name, mixer)
+    try:
+        with EVOController(EVO8) as evo:
+            evo.set_mixer_output(db, -100.0, 100.0, output_pair=pair, mix_output=mix_out)
+            cfg.save(evo)
+    except OSError:
+        pass
     _notify(f"PC {pair*2+1}|{pair*2+2} Mix Level", f"{db:+.1f} dB", args.quiet)
 
 
@@ -419,8 +636,17 @@ def main() -> None:
     p_vol.add_argument("--quiet", "-q", action="store_true")
     p_vol.set_defaults(func=cmd_volume)
 
-    p_loop = sub.add_parser("loopback", help="Toggle or set loopback bus level")
-    p_loop.add_argument("state", help="'on', 'off', 'toggle', or dB level")
+    p_loop = sub.add_parser(
+        "loopback",
+        help="Select Loopback recording source (main, out3_4, send5_6, hwmix, off, toggle, apply) & level",
+    )
+    p_loop.add_argument(
+        "state",
+        nargs="?",
+        default="apply",
+        help="'main' (Out 1|2 Headphones), 'out3_4', 'send5_6', 'hwmix', 'off', 'toggle', 'level', or 'apply'",
+    )
+    p_loop.add_argument("--level", "-l", type=int, default=None, help="Loopback capture level %% (0..150)")
     p_loop.add_argument("--quiet", "-q", action="store_true")
     p_loop.set_defaults(func=cmd_loopback)
 
@@ -434,9 +660,7 @@ def main() -> None:
     p_tui = sub.add_parser("tui", help="Launch evotui in floating window")
     p_tui.set_defaults(func=cmd_tui)
 
-    # Support negative numbers (e.g. -20) as positional arguments
-    argv = sys.argv[1:]
-    args = parser.parse_args(argv)
+    args = parser.parse_args(sys.argv[1:])
     args.func(args)
 
 
