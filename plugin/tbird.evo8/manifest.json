@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "tbird.evo8",
+  "name": "Audient EVO 8",
+  "version": "1.0.0",
+  "author": "tbird",
+  "description": "Audient EVO 8 hardware DSP mixer, zero-latency direct monitoring, preamps, loopback & PipeWire buffer/rate control",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Audient EVO 8",
+    "description": "Hardware mixer, direct monitoring, buffer size & sample rate",
+    "category": "Audio",
+    "allowMultiple": false
+  }
+}
