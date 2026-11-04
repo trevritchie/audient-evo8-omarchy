@@ -25,8 +25,8 @@ class TestDeviceSpec:
         assert EVO8.usb_pid == 0x0007
         assert EVO8.num_inputs == 4
         assert EVO8.num_output_pairs == 2
-        assert EVO8.gain_db_min == 0.0
-        assert EVO8.gain_db_max == 58.0
+        assert EVO8.gain_db_min == -8.0
+        assert EVO8.gain_db_max == 50.0
         assert EVO8.mixer_inputs == 10
         assert EVO8.mixer_outputs == 4
         assert EVO8.num_mute_targets == 6

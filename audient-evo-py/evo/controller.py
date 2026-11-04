@@ -70,7 +70,7 @@ class EVOController:
         else:
             self._mute_targets.update(
                 {
-                    f"output{i+1}": (0x0200 + spec.num_inputs + i, 0x3A00)
+                    f"output{i+1}": (0x0100 + i * 2, 0x3B00)
                     for i in range(spec.num_output_pairs)
                 }
             )
@@ -414,6 +414,14 @@ class EVOController:
         """
         self._require_output_pair(output_pair)
         self._require_mix_output(mix_output)
+        if output_pair >= self.spec.num_output_pairs and volume_db > _MIXER_DB_MIN:
+            # Ensure FU10 digital trim on loopback playback channels (CH5/6) is 0 dB
+            base_cn = output_pair * 2 + 1
+            try:
+                for cn in range(base_cn, base_cn + 2):
+                    self._set_fu_raw(_FU10, cn, _db_to_usb(0.0))
+            except OSError:
+                pass
         output_l_in = self.spec.num_inputs + output_pair * 2
         output_r_in = output_l_in + 1
         l_db_l, r_db_l = self._pan_to_lr_db(volume_db, pan_l)
