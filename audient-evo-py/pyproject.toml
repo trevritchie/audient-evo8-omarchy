@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audient-evo"
+version = "0.2.1"
+description = "Linux controller for Audient EVO USB audio interfaces"
+license = "Unlicense"
+requires-python = ">=3.10"
+
+[project.scripts]
+evoctl = "evoctl:main"
+evotui = "evotui:main"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+audio-test = ["numpy", "sounddevice"]
+
+[tool.setuptools]
+py-modules = ["evoctl", "evotui"]
+packages = ["evo"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+markers = [
+    "unit: no hardware, audio stack, or manual input required",
+    "hardware: requires a connected EVO device and evo_raw",
+    "audio: requires optional audio-test deps and PipeWire audio devices",
+    "manual: requires interactive user input",
+]
+
+[tool.basedpyright]
+reportMissingTypeStubs = "none"
+reportUnknownVariableType = "none"
+reportUnknownMemberType = "none"
+reportUnusedCallResult = "none"
