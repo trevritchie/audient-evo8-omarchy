@@ -158,8 +158,41 @@ class EvoTUI:
         self._total_h = 3 + self._controls_body_h + 5
 
         self._config_dir = cfg._device_dir(self.spec.name)
+        self.state = self._default_hw_state()
         self._load_mixer_state()
         self._sync()
+
+    def _default_hw_state(self):
+        output_keys = (
+            ["output"]
+            if self.spec.num_output_pairs == 1
+            else [f"output{i + 1}" for i in range(self.spec.num_output_pairs)]
+        )
+        st = {key: {"volume": -20.0, "mute": False} for key in output_keys}
+        st.update(
+            {
+                f"input{i + 1}": {"gain": self.spec.gain_db_min, "mute": False, "phantom": False}
+                for i in range(self.spec.num_inputs)
+            }
+        )
+        if self.spec.has_monitor:
+            st["monitor"] = 50
+        try:
+            saved = cfg.load(self.spec.name, self._config_dir / "config.json")
+            for k in st:
+                if k in saved and isinstance(saved[k], dict):
+                    st[k].update(saved[k])
+        except Exception:
+            pass
+        return st
+
+    def _persist_hw_state(self):
+        try:
+            data = dict(self.state)
+            data["mixer"] = self._mixer_state
+            cfg._write_json(self._config_dir / "config.json", data)
+        except Exception:
+            pass
 
     # -- state --
 
@@ -190,8 +223,9 @@ class EvoTUI:
     def _sync(self):
         try:
             self.state = self.evo.decode_status(self.evo.get_status_raw())
-        except OSError as e:
-            self._set_status(f"USB error: {e}", err=True)
+            self._usb_ok = True
+        except OSError:
+            self._usb_ok = False
 
     def _set_status(self, msg, err=False):
         self.status, self.status_err, self.status_ticks = msg, err, 150
@@ -274,6 +308,10 @@ class EvoTUI:
         key, sub = elems[self.cursor][:2]
         lo, hi, _ = self._ranges[key]
         val = _clamp(val, lo, hi)
+        if sub is None:
+            self.state[key] = val
+        else:
+            self.state[key][sub] = val
         try:
             if key == "monitor":
                 self.evo.set_monitor(round(val))
@@ -283,12 +321,9 @@ class EvoTUI:
                 self.evo.set_volume(val, output_pair=int(key[-1]) - 1)
             else:
                 self.evo.set_gain(key, val)
-            if sub is None:
-                self.state[key] = val
-            else:
-                self.state[key][sub] = val
-        except OSError as e:
-            self._set_status(f"Error: {e}", err=True)
+        except OSError:
+            self._usb_ok = False
+        self._persist_hw_state()
 
     def _adjust(self, delta):
         elems = self._active_elements()
@@ -300,24 +335,26 @@ class EvoTUI:
         key = elems[self.cursor][0]
         if key == "monitor":
             return
+        new = not self.state[key]["mute"]
+        self.state[key]["mute"] = new
         try:
-            new = not self.state[key]["mute"]
             self.evo.set_mute(key, new)
-            self.state[key]["mute"] = new
-        except OSError as e:
-            self._set_status(f"Error: {e}", err=True)
+        except OSError:
+            self._usb_ok = False
+        self._persist_hw_state()
 
     def _toggle_phantom(self):
         elems = self._active_elements()
         key = elems[self.cursor][0]
         if not key.startswith("input"):
             return
+        new = not self.state[key]["phantom"]
+        self.state[key]["phantom"] = new
         try:
-            new = not self.state[key]["phantom"]
             self.evo.set_phantom(key, new)
-            self.state[key]["phantom"] = new
-        except OSError as e:
-            self._set_status(f"Error: {e}", err=True)
+        except OSError:
+            self._usb_ok = False
+        self._persist_hw_state()
 
     # -- mixer state persistence --
 
@@ -354,6 +391,7 @@ class EvoTUI:
         self._mixer_set_val(self._mixer_val() + delta * step)
 
     def _apply_mixer(self, key):
+        self._save_mixer_state()
         try:
             s = self._cur_mixer_state()[key]
             mix_output = self._mix_output
@@ -365,9 +403,8 @@ class EvoTUI:
                 self.evo.set_mixer_output(
                     s["volume"], s["pan_l"], s["pan_r"], output_pair=pair, mix_output=mix_output
                 )
-            self._save_mixer_state()
-        except OSError as e:
-            self._set_status(f"Error: {e}", err=True)
+        except OSError:
+            pass
 
     # -- file picker --
 
@@ -1077,8 +1114,15 @@ class EvoTUI:
 
     # -- event loop --
 
+    @staticmethod
+    def _curs_set(val: int) -> None:
+        try:
+            curses.curs_set(val)
+        except curses.error:
+            pass
+
     def run(self, scr):
-        curses.curs_set(0)
+        self._curs_set(0)
         curses.use_default_colors()
         for i, color in enumerate(
             [
@@ -1094,21 +1138,25 @@ class EvoTUI:
             curses.init_pair(i, color, -1)
         curses.set_escdelay(25)
         curses.mousemask(curses.ALL_MOUSE_EVENTS)
-        scr.timeout(20)
+        scr.timeout(50)
+        sync_counter = 0
 
         while True:
-            self._sync()
+            sync_counter += 1
+            if getattr(self, "_usb_ok", True) and sync_counter >= 50:
+                sync_counter = 0
+                self._sync()
             self._draw(scr)
             if self._text_cursor_pos:
                 h, w = scr.getmaxyx()
                 r, c = self._text_cursor_pos
                 if 0 <= r < h and 0 <= c < w - 1:
-                    curses.curs_set(1)
+                    self._curs_set(1)
                     scr.move(r, c)
                 else:
-                    curses.curs_set(0)
+                    self._curs_set(0)
             else:
-                curses.curs_set(0)
+                self._curs_set(0)
             scr.refresh()
             key = scr.getch()
 

@@ -117,9 +117,13 @@ Panel {
   }
 
   function launchTui() {
-    root.close()
-    tuiProc.command = [root.evoBin, "tui"]
-    tuiProc.running = true
+    var cmd = "/usr/share/omarchy/bin/omarchy-launch-or-focus-tui --app-id=org.omarchy.evotui " + Quickshell.env("HOME") + "/.local/bin/evotui"
+    if (root.bar) {
+      root.bar.run(cmd)
+    } else {
+      root.close()
+      Quickshell.execDetached([root.evoBin, "tui"])
+    }
   }
 
   onOpenedChanged: {

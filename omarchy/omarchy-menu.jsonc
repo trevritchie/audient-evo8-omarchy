@@ -52,14 +52,14 @@
     "description": "Hardware mixer, direct monitoring, buffer size & sample rate"
   },
   "trigger.evo8.tui": {
-    "icon": "🎛",
+    "icon": "󰓃",
     "label": "Open EVO 8 Hardware Mixer (TUI)",
     "aliases": ["evotui", "evo8 mixer"],
     "description": "Full 10x4 hardware matrix mixer, preamps, 48V, pan & routing",
     "action": "~/.local/bin/evo8-audio tui"
   },
   "trigger.evo8.monitor1": {
-    "icon": "🎸",
+    "icon": "󰍬",
     "label": "Direct Monitor In 1 (Guitar / Mic 1)",
     "aliases": ["guitar monitor", "direct monitor 1"],
     "description": "Toggle zero-latency hardware monitoring for Input 1",
@@ -108,7 +108,7 @@
     "action": "~/.local/bin/evo8-audio loopback send5_6"
   },
   "trigger.evo8.loopback_hwmix": {
-    "icon": "🎛",
+    "icon": "󰓃",
     "label": "Loopback Source: Hardware Mix (Mics + PC)",
     "aliases": ["loopback hwmix", "loopback master mix"],
     "description": "Record EVO 8 internal MU60 hardware mixer (Mics 1-4 + PC)",
@@ -157,28 +157,28 @@
     "action": "~/.local/bin/evo8-audio buffer auto"
   },
   "trigger.evo8.rate44100": {
-    "icon": "〰",
+    "icon": "󰤽",
     "label": "Sample Rate: 44.1 kHz",
     "aliases": ["44.1khz", "44100"],
     "description": "Force PipeWire & EVO 8 clock to 44,100 Hz",
     "action": "~/.local/bin/evo8-audio rate 44100"
   },
   "trigger.evo8.rate48000": {
-    "icon": "〰",
+    "icon": "󰤽",
     "label": "Sample Rate: 48 kHz (Default)",
     "aliases": ["48khz", "48000"],
     "description": "Reset PipeWire & EVO 8 clock to 48,000 Hz",
     "action": "~/.local/bin/evo8-audio rate 48000"
   },
   "trigger.evo8.rate88200": {
-    "icon": "〰",
+    "icon": "󰤽",
     "label": "Sample Rate: 88.2 kHz",
     "aliases": ["88.2khz", "88200"],
     "description": "Force PipeWire & EVO 8 clock to 88,200 Hz",
     "action": "~/.local/bin/evo8-audio rate 88200"
   },
   "trigger.evo8.rate96000": {
-    "icon": "〰",
+    "icon": "󰤽",
     "label": "Sample Rate: 96 kHz",
     "aliases": ["96khz", "96000"],
     "description": "Force PipeWire & EVO 8 clock to 96,000 Hz",
