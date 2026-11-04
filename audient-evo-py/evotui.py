@@ -56,9 +56,12 @@ def _build_elements(spec: DeviceSpec):
 def _build_element_groups(spec: DeviceSpec):
     if spec.num_output_pairs == 1:
         return [("ALL", _build_elements(spec))]
-    inputs = [(f"input{i + 1}", "gain", f"IN {i + 1}", C_BLUE) for i in range(spec.num_inputs)]
+    inputs = [
+        (f"input{i + 1}", "gain", f"IN {i + 1} (PREAMP)", C_BLUE)
+        for i in range(spec.num_inputs)
+    ]
     outputs = [
-        (f"output{i + 1}", "volume", f"OUT {i * 2 + 1}|{i * 2 + 2}", C_GREEN)
+        (f"output{i + 1}", "volume", f"MASTER OUT {i * 2 + 1}|{i * 2 + 2}", C_GREEN)
         for i in range(spec.num_output_pairs)
     ]
     return [("INPUTS", inputs), ("OUTPUTS", outputs)]
@@ -97,9 +100,13 @@ def _build_mixer_sections(spec: DeviceSpec):
 
     outputs_row = []
     for i in range(cfg.num_mixer_output_sources(spec)):
-        label = f"OUT {cfg.stereo_pair_label(i)}"
-        color = C_YELLOW if i >= spec.num_output_pairs else C_GREEN
-        label += " (LOOP)" if color == C_YELLOW else ""
+        pair_str = cfg.stereo_pair_label(i)
+        if i >= spec.num_output_pairs:
+            label = f"LOOP SEND {pair_str}"
+            color = C_YELLOW
+        else:
+            label = f"PC PLAY {pair_str}"
+            color = C_GREEN
         outputs_row.append((cfg.output_key(i), label, color, list(output_sliders)))
     return [inputs, outputs_row]
 
@@ -746,7 +753,7 @@ class EvoTUI:
             scr,
             row,
             cx + 2,
-            f"{'Vol:':<{siw - 12}} {vol_val:+6.1f} dB",
+            f"{'Mix:':<{siw - 12}} {vol_val:+6.1f} dB",
             vol_val_attr,
         )
         row += 1
