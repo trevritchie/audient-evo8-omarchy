@@ -60,9 +60,10 @@ if [[ -e /dev/evo8 ]] && command -v evoctl >/dev/null 2>&1; then
     fi
 fi
 
-# 4. Set default sink and source by exact node name
+# 4. Set default sink by exact node name (leave default source as internal mic)
 pactl set-default-sink "$SINK" 2>/dev/null || true
-pactl set-default-source "$SOURCE" 2>/dev/null || true
+# Do NOT force evo8_mic_1_2 as default source so laptop built-in mic remains primary
+# pactl set-default-source "$SOURCE" 2>/dev/null || true
 
 # 5. Apply saved Loopback Source routing (defaults to Main Output 1+2 / Headphones)
 if command -v evo8-audio >/dev/null 2>&1; then
@@ -77,4 +78,4 @@ if [[ -n "${ee_id:-}" ]]; then
     done
 fi
 
-echo "Default sink: $SINK | Default source: $SOURCE"
+echo "Default sink: $SINK | Default source: $(pactl get-default-source 2>/dev/null || echo 'none')"
