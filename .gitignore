@@ -2,3 +2,12 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+
+# Kernel module build artifacts
+audient-evo-py/kmod/*.ko
+audient-evo-py/kmod/*.o
+audient-evo-py/kmod/*.mod*
+audient-evo-py/kmod/.*.cmd
+audient-evo-py/kmod/.module-common.o
+audient-evo-py/kmod/Module.symvers
+audient-evo-py/kmod/modules.order
