@@ -63,7 +63,7 @@ def _build_element_groups(spec: DeviceSpec):
         for i in range(spec.num_inputs)
     ]
     outputs = [
-        (f"output{i + 1}", "volume", f"MASTER OUT {i * 2 + 1}|{i * 2 + 2}", C_GREEN)
+        (f"output{i + 1}", "volume", f"MASTER OUT {i * 2 + 1}+{i * 2 + 2}", C_GREEN)
         for i in range(spec.num_output_pairs)
     ]
     return [("INPUTS", inputs), ("OUTPUTS", outputs)]
@@ -102,7 +102,7 @@ def _build_mixer_sections(spec: DeviceSpec):
 
     outputs_row = []
     for i in range(cfg.num_mixer_output_sources(spec)):
-        pair_str = cfg.stereo_pair_label(i)
+        pair_str = cfg.stereo_pair_label(i).replace("|", "+")
         if i >= spec.num_output_pairs:
             label = f"LOOP SEND {pair_str}"
             color = C_YELLOW

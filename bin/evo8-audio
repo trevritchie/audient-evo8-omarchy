@@ -35,17 +35,17 @@ LOOPBACK_IN_R = "evo8_loopback_capture.hw:input_RR"
 
 LOOPBACK_SOURCES: dict[str, tuple[str, str | None, str | None]] = {
     "main": (
-        "Main 1|2 (Headphones)",
+        "Main Output 1+2 (Headphones)",
         "evo8_main_output:monitor_FL",
         "evo8_main_output:monitor_FR",
     ),
     "out3_4": (
-        "Out 3|4 (Line Out)",
+        "Output 3+4 (Line Out)",
         "evo8_output_3_4:monitor_FL",
         "evo8_output_3_4:monitor_FR",
     ),
     "send5_6": (
-        "Send 5|6 (Dedicated)",
+        "Loopback Send 1+2 (Dedicated)",
         "evo8_loopback_output:monitor_FL",
         "evo8_loopback_output:monitor_FR",
     ),
@@ -480,12 +480,12 @@ def cmd_status(args: argparse.Namespace) -> None:
 
     o1, o2 = st["output1"], st["output2"]
     print(
-        f"Outputs:       OUT 1|2: {o1['volume']:+.1f} dB (mute={'on' if o1['mute'] else 'off'}) | "
-        f"OUT 3|4: {o2['volume']:+.1f} dB (mute={'on' if o2['mute'] else 'off'})"
+        f"Outputs:       OUT 1+2: {o1['volume']:+.1f} dB (mute={'on' if o1['mute'] else 'off'}) | "
+        f"OUT 3+4: {o2['volume']:+.1f} dB (mute={'on' if o2['mute'] else 'off'})"
     )
     print(
         f"Loopback Rec:  {st['loopback_source_label']} (Level: {st['loopback_level']}%) | "
-        f"Capture Node: EVO8 Loopback ({LOOPBACK_CAPTURE_NODE})"
+        f"Capture Node: EVO 8 Loopback 1+2 ({LOOPBACK_CAPTURE_NODE})"
     )
     print("Inputs:")
     for inp in st["inputs"]:

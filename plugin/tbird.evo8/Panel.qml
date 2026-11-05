@@ -23,7 +23,7 @@ Panel {
   property bool out2Mute: false
   property bool loopbackOn: true
   property string loopbackSource: "main"
-  property string loopbackSourceLabel: "Main 1|2 (Headphones)"
+  property string loopbackSourceLabel: "Main Output 1+2 (Headphones)"
   property int loopbackLevel: 100
   property var inputs: [
     { index: 1, gain: -8.0, mute: false, phantom: false, monitor_on: false, monitor_db: 0.0 },
@@ -33,9 +33,9 @@ Panel {
   ]
 
   readonly property var loopbackOptions: [
-    { label: "Main 1|2", value: "main" },
-    { label: "Out 3|4", value: "out3_4" },
-    { label: "Send 5|6", value: "send5_6" },
+    { label: "Main 1+2", value: "main" },
+    { label: "Out 3+4", value: "out3_4" },
+    { label: "Send 1+2", value: "send5_6" },
     { label: "HW Mix", value: "hwmix" },
     { label: "Off", value: "off" }
   ]
@@ -382,7 +382,7 @@ Panel {
               }
 
               Text {
-                text: "HW DSP -> OUT 1|2"
+                text: "HW DSP -> OUT 1+2"
                 color: Qt.darker(root.bar.foreground, 1.5)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
@@ -558,7 +558,7 @@ Panel {
 
                 Text {
                   id: out1Text
-                  text: "OUT 1|2 (Main / HP 1): " + root.out1Vol.toFixed(1) + " dB"
+                  text: "OUT 1+2 (Main / HP 1): " + root.out1Vol.toFixed(1) + " dB"
                   color: root.bar.foreground
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -606,7 +606,7 @@ Panel {
 
                 Text {
                   id: out2Text
-                  text: "OUT 3|4 (Line / HP 2): " + root.out2Vol.toFixed(1) + " dB"
+                  text: "OUT 3+4 (Line / HP 2): " + root.out2Vol.toFixed(1) + " dB"
                   color: root.bar.foreground
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.bodySmall
@@ -659,7 +659,7 @@ Panel {
               }
 
               Text {
-                text: "Input: EVO8 Loopback"
+                text: "Input: EVO 8 Loopback 1+2"
                 color: Qt.darker(root.bar.foreground, 1.5)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
