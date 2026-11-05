@@ -109,9 +109,14 @@ Panel {
     }
   }
 
+  property var pendingCmd: null
+
   function runCmd(args) {
     var cmd = [root.evoBin].concat(args)
-    if (actionProc.running) return
+    if (actionProc.running) {
+      root.pendingCmd = cmd
+      return
+    }
     actionProc.command = cmd
     actionProc.running = true
   }
@@ -144,7 +149,16 @@ Panel {
 
   Process {
     id: actionProc
-    onExited: root.refresh()
+    onExited: {
+      if (root.pendingCmd !== null) {
+        var nextCmd = root.pendingCmd
+        root.pendingCmd = null
+        actionProc.command = nextCmd
+        actionProc.running = true
+      } else {
+        root.refresh()
+      }
+    }
   }
 
   Process {

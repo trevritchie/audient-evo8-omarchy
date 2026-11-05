@@ -1,6 +1,8 @@
 """Curses TUI for Audient EVO devices"""
 
 import curses
+import math
+from pathlib import Path
 import sys
 
 from evo.controller import (
@@ -186,9 +188,29 @@ class EvoTUI:
             st["monitor"] = 50
         try:
             saved = cfg.load(self.spec.name, self._config_dir / "config.json")
-            for k in st:
-                if k in saved and isinstance(saved[k], dict):
-                    st[k].update(saved[k])
+            for k in output_keys:
+                sec = saved.get(k)
+                if isinstance(sec, dict):
+                    vol = sec.get("volume")
+                    if isinstance(vol, (int, float)) and not isinstance(vol, bool) and math.isfinite(float(vol)):
+                        st[k]["volume"] = _clamp(float(vol), self.spec.vol_db_min, self.spec.vol_db_max)
+                    if "mute" in sec:
+                        st[k]["mute"] = bool(sec["mute"])
+            for i in range(self.spec.num_inputs):
+                k = f"input{i + 1}"
+                sec = saved.get(k)
+                if isinstance(sec, dict):
+                    gain = sec.get("gain")
+                    if isinstance(gain, (int, float)) and not isinstance(gain, bool) and math.isfinite(float(gain)):
+                        st[k]["gain"] = _clamp(float(gain), self.spec.gain_db_min, self.spec.gain_db_max)
+                    if "mute" in sec:
+                        st[k]["mute"] = bool(sec["mute"])
+                    if "phantom" in sec:
+                        st[k]["phantom"] = bool(sec["phantom"])
+            if self.spec.has_monitor and "monitor" in saved:
+                mon = saved["monitor"]
+                if isinstance(mon, (int, float)) and not isinstance(mon, bool) and math.isfinite(float(mon)):
+                    st["monitor"] = _clamp(int(round(float(mon))), 0, 100)
         except Exception:
             pass
         return st
@@ -484,18 +506,42 @@ class EvoTUI:
         else:  # save
             if key in (curses.KEY_BACKSPACE, 127):
                 self._file_input = self._file_input[:-1]
-            elif 32 <= key <= 126:
+            elif 32 <= key <= 126 and chr(key) not in ("/", "\\"):
                 max_len = BOX_IW - len("File: ") - len(".json") - 1
                 if len(self._file_input) < max_len:
                     self._file_input += chr(key)
             elif key == 10:
-                name = self._file_input.strip()
-                if name:
+                raw_name = self._file_input.strip()
+                safe_name = Path(raw_name).name
+                if (
+                    not safe_name
+                    or safe_name in (".", "..")
+                    or safe_name.startswith(".")
+                    or "/" in raw_name
+                    or "\\" in raw_name
+                    or ".." in raw_name
+                ):
+                    self._set_status("Save error: invalid filename", err=True)
+                    self._mode = "normal"
+                    return
+                target_path = (self._config_dir / f"{safe_name}.json").resolve()
+                if target_path.parent != self._config_dir.resolve():
+                    self._set_status("Save error: invalid path", err=True)
+                    self._mode = "normal"
+                    return
+                try:
+                    cfg.save(self.evo, target_path)
+                    self._set_status(f"Saved {ARROW_R} {safe_name}.json")
+                except OSError:
                     try:
-                        cfg.save(self.evo, self._config_dir / (name + ".json"))
-                        self._set_status(f"Saved {ARROW_R} {name}.json")
+                        data = dict(self.state)
+                        data["mixer"] = self._mixer_state
+                        cfg._write_json(target_path, data)
+                        self._set_status(f"Saved {ARROW_R} {safe_name}.json (cached)")
                     except Exception as e:
                         self._set_status(f"Save error: {e}", err=True)
+                except Exception as e:
+                    self._set_status(f"Save error: {e}", err=True)
                 self._mode = "normal"
 
     # -- drawing primitives --
@@ -505,6 +551,11 @@ class EvoTUI:
             h, w = scr.getmaxyx()
             if row < 0 or row >= h or col >= w - 1:
                 return
+            if col < 0:
+                text = text[-col:]
+                col = 0
+                if not text:
+                    return
             scr.addnstr(row, col, text, w - col - 1, *args)
         except curses.error:
             pass
@@ -765,9 +816,13 @@ class EvoTUI:
     def _draw_file_picker(self, scr):
         scr.erase()
         h, w = scr.getmaxyx()
-        cx = (w - (BOX_IW + 2)) // 2
-        action = "SAVE" if self._mode == "save" else "LOAD"
+        total_w = BOX_IW + 2
         total_h = PICKER_LIST_H + 3 + (1 if self._mode == "save" else 0)
+        if h < total_h or w < total_w:
+            self._safe(scr, 0, 0, f"Terminal too small ({w}x{h}, need {total_w}x{total_h})")
+            return
+        cx = max(0, (w - total_w) // 2)
+        action = "SAVE" if self._mode == "save" else "LOAD"
         row = max(0, (h - total_h) // 2)
 
         dim = curses.color_pair(C_WHITE) | curses.A_DIM

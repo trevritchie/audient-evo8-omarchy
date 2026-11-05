@@ -6,6 +6,7 @@ Per-device config paths:
 """
 
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -28,14 +29,23 @@ def mixer_state_file(device_name: str) -> Path:
     return _device_dir(device_name) / ".mixer-state.json"
 
 
+def _reject_nan_constant(val: str) -> None:
+    raise ValueError(f"Non-standard JSON constant {val!r} is not allowed")
+
+
 def _read_json(path: Path) -> dict:
     try:
-        return json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
+        data = json.loads(path.read_text(), parse_constant=_reject_nan_constant)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
         raise ValueError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected JSON object, got {type(data).__name__}")
+    return data
 
 
 def _write_json(path: Path, data: dict) -> None:
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected dict to write to {path}, got {type(data).__name__}")
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = None
     try:
@@ -47,7 +57,7 @@ def _write_json(path: Path, data: dict) -> None:
             delete=False,
         ) as f:
             tmp = Path(f.name)
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, allow_nan=False)
             f.write("\n")
         os.replace(tmp, path)
     except Exception:
@@ -147,12 +157,62 @@ def default_mixer_state(spec: DeviceSpec) -> dict:
     }
 
 
-def _require_mixer_state(state: dict) -> None:
+def _finite_float(val, default: float, lo: float, hi: float) -> float:
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            return default
+    f = float(val)
+    if not math.isfinite(f):
+        return default
+    return max(lo, min(hi, f))
+
+
+def _require_finite(val: float, name: str) -> float:
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    f = float(val)
+    if not math.isfinite(f):
+        raise ValueError(f"{name} must be finite, got {val}")
+    return f
+
+
+def _require_mixer_state(state: dict, spec: DeviceSpec | None = None) -> None:
     if (
-        state.get("version") != MIXER_STATE_VERSION
+        not isinstance(state, dict)
+        or state.get("version") != MIXER_STATE_VERSION
         or not isinstance(state.get("mix_outputs"), dict)
     ):
-        raise ValueError(f"Unsupported mixer state schema: {state.get('version')!r}")
+        ver = state.get("version") if isinstance(state, dict) else type(state).__name__
+        raise ValueError(f"Unsupported mixer state schema: {ver!r}")
+    for mix_key, mix in state["mix_outputs"].items():
+        if not isinstance(mix, dict):
+            raise ValueError(f"Invalid mixer output entry for {mix_key!r}")
+        if not isinstance(mix.get("inputs"), dict) or not isinstance(mix.get("outputs"), dict):
+            raise ValueError(f"Invalid inputs/outputs in mixer state for {mix_key!r}")
+    if spec is not None:
+        for mo in range(spec.num_output_pairs):
+            mkey = mix_output_key(spec, mo)
+            if mkey not in state["mix_outputs"]:
+                raise ValueError(f"Missing mixer output {mkey!r}")
+            mix = state["mix_outputs"][mkey]
+            for i in range(spec.num_inputs):
+                ikey = f"input{i + 1}"
+                inp = mix["inputs"].get(ikey)
+                if not isinstance(inp, dict):
+                    raise ValueError(f"Missing or invalid {ikey!r} in {mkey!r}")
+                inp["volume"] = _finite_float(inp.get("volume"), -128.0, -128.0, 6.0)
+                inp["pan"] = _finite_float(inp.get("pan"), 0.0, -100.0, 100.0)
+            for pair in range(num_mixer_output_sources(spec)):
+                okey = output_key(pair)
+                out = mix["outputs"].get(okey)
+                if not isinstance(out, dict):
+                    raise ValueError(f"Missing or invalid {okey!r} in {mkey!r}")
+                out["output_pair"] = pair
+                out["volume"] = _finite_float(out.get("volume"), -128.0, -128.0, 6.0)
+                out["pan_l"] = _finite_float(out.get("pan_l"), -100.0, -100.0, 100.0)
+                out["pan_r"] = _finite_float(out.get("pan_r"), 100.0, -100.0, 100.0)
 
 
 def _require_mix_output(spec: DeviceSpec, mix_output: int) -> None:
@@ -172,13 +232,20 @@ def _require_output_pair(spec: DeviceSpec, output_pair: int) -> None:
 
 
 def load_or_default_mixer_state(spec: DeviceSpec, path=None) -> dict:
-    """Load the canonical mixer shadow state, or return defaults if it is absent."""
-    return load_mixer_state(spec.name, path) or default_mixer_state(spec)
+    """Load the canonical mixer shadow state, or return defaults if absent or corrupted."""
+    try:
+        state = load_mixer_state(spec.name, path)
+        if state is None:
+            return default_mixer_state(spec)
+        _require_mixer_state(state, spec)
+        return state
+    except (ValueError, KeyError, TypeError, OSError):
+        return default_mixer_state(spec)
 
 
 def mixer_output_state(state: dict, spec: DeviceSpec, mix_output: int = 0) -> dict:
     """Return a mutable canonical mixer destination state."""
-    _require_mixer_state(state)
+    _require_mixer_state(state, spec)
     return state["mix_outputs"][mix_output_key(spec, mix_output)]
 
 
@@ -212,8 +279,10 @@ def update_mixer_input_state(
     """Update a mic/line input route in canonical mixer state."""
     _require_mix_output(spec, mix_output)
     _require_input_num(spec, input_num)
+    vol_f = max(-128.0, min(6.0, _require_finite(volume, "volume")))
+    pan_f = max(-100.0, min(100.0, _require_finite(pan, "pan")))
     mixer_section_state(state, spec, f"input{input_num}", mix_output).update(
-        {"volume": volume, "pan": pan}
+        {"volume": vol_f, "pan": pan_f}
     )
 
 
@@ -229,12 +298,15 @@ def update_mixer_output_state(
     """Update a USB output source pair route in canonical mixer state."""
     _require_mix_output(spec, mix_output)
     _require_output_pair(spec, output_pair)
+    vol_f = max(-128.0, min(6.0, _require_finite(volume, "volume")))
+    pan_l_f = max(-100.0, min(100.0, _require_finite(pan_l, "pan_l")))
+    pan_r_f = max(-100.0, min(100.0, _require_finite(pan_r, "pan_r")))
     mixer_section_state(state, spec, output_key(output_pair), mix_output).update(
         {
             "output_pair": output_pair,
-            "volume": volume,
-            "pan_l": pan_l,
-            "pan_r": pan_r,
+            "volume": vol_f,
+            "pan_l": pan_l_f,
+            "pan_r": pan_r_f,
         }
     )
 
@@ -280,39 +352,48 @@ def load(device_name: str, path=None) -> dict:
 
 def apply(evo, data: dict):
     """Apply a config dict to the device."""
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected dict for device config, got {type(data).__name__}")
     spec = evo.spec
     if "monitor" in data and evo.spec.has_monitor:
-        evo.set_monitor(data["monitor"])
+        mon_val = round(_require_finite(data["monitor"], "monitor"))
+        evo.set_monitor(max(0, min(100, mon_val)))
 
     # Output volume/mute
     if spec.num_output_pairs == 1:
         if "output" in data:
             out = data["output"]
+            if not isinstance(out, dict):
+                raise ValueError(f"Expected dict for 'output', got {type(out).__name__}")
             if "volume" in out:
-                evo.set_volume(out["volume"])
+                evo.set_volume(_require_finite(out["volume"], "output.volume"))
             if "mute" in out:
-                evo.set_mute("output", out["mute"])
+                evo.set_mute("output", bool(out["mute"]))
     else:
         for pair in range(spec.num_output_pairs):
             key = f"output{pair+1}"
             if key in data:
                 out = data[key]
+                if not isinstance(out, dict):
+                    raise ValueError(f"Expected dict for {key!r}, got {type(out).__name__}")
                 if "volume" in out:
-                    evo.set_volume(out["volume"], output_pair=pair)
+                    evo.set_volume(_require_finite(out["volume"], f"{key}.volume"), output_pair=pair)
                 if "mute" in out:
-                    evo.set_mute(key, out["mute"])
+                    evo.set_mute(key, bool(out["mute"]))
 
     # Input gain/mute/phantom
     for i in range(spec.num_inputs):
         ch = f"input{i+1}"
         if ch in data:
             inp = data[ch]
+            if not isinstance(inp, dict):
+                raise ValueError(f"Expected dict for {ch!r}, got {type(inp).__name__}")
             if "gain" in inp:
-                evo.set_gain(ch, inp["gain"])
+                evo.set_gain(ch, _require_finite(inp["gain"], f"{ch}.gain"))
             if "mute" in inp:
-                evo.set_mute(ch, inp["mute"])
+                evo.set_mute(ch, bool(inp["mute"]))
             if "phantom" in inp:
-                evo.set_phantom(ch, inp["phantom"])
+                evo.set_phantom(ch, bool(inp["phantom"]))
 
     # Mixer
     if "mixer" in data:

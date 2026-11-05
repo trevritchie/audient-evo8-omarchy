@@ -1,8 +1,9 @@
 import argparse
 import errno
+import math
 import sys
 from evo import config as cfg
-from evo.controller import EVOController
+from evo.controller import EVOController, _MIXER_DB_MAX, _MIXER_DB_MIN
 from evo.devices import DEVICES, detect_devices
 
 
@@ -124,7 +125,17 @@ def parse_args(spec, argv=None):
 
     args = parser.parse_args(argv)
 
-    if args.action in ("status", "save", "load", "mixer", "m"):
+    if args.action in ("status", "save", "load"):
+        return args
+
+    if args.action in ("mixer", "m"):
+        if not math.isfinite(args.volume) or not (_MIXER_DB_MIN <= args.volume <= _MIXER_DB_MAX):
+            parser.error(f"Mixer volume must be between {_MIXER_DB_MIN:.0f} and {_MIXER_DB_MAX:.0f} dB.")
+        for pan_attr in ("pan", "pan_l", "pan_r"):
+            if hasattr(args, pan_attr):
+                pval = getattr(args, pan_attr)
+                if not math.isfinite(pval) or not (-100.0 <= pval <= 100.0):
+                    parser.error(f"Mixer {pan_attr} must be between -100 and 100.")
         return args
 
     if args.action in ("set", "s"):
@@ -134,6 +145,8 @@ def parse_args(spec, argv=None):
                     args.value = float(args.value)
                 except ValueError:
                     parser.error(f"{args.parameter} value must be a number.")
+                if not math.isfinite(args.value):
+                    parser.error(f"{args.parameter} value must be a finite number.")
                 if args.parameter == "volume":
                     lo, hi, label = spec.vol_db_min, spec.vol_db_max, "Volume"
                 else:

@@ -41,7 +41,9 @@ _MIXER_DB_MAX = 6.0  # 0x0600 (Windows app limit)
 
 def _db_to_usb(db: float) -> int:
     """Convert dB to UAC2 16-bit signed (1/256 dB steps)."""
-    return round(db * 256) & 0xFFFF
+    if isinstance(db, bool) or not isinstance(db, (int, float)) or not math.isfinite(float(db)):
+        raise ValueError(f"dB value must be a finite number, got {db!r}")
+    return round(float(db) * 256) & 0xFFFF
 
 
 def _usb_to_db(raw: int) -> float:
@@ -275,6 +277,19 @@ class EVOController:
 
     def decode_status(self, data: bytes) -> dict:
         """Decode a raw status blob into a state dict."""
+        expected_len = (
+            2
+            + 2 * self.spec.num_inputs
+            + (1 if self.spec.has_monitor else 0)
+            + 2 * (self.spec.num_output_pairs - 1)
+            + len(self._mute_targets)
+            + len(self._phantom_targets)
+        )
+        if not isinstance(data, (bytes, bytearray)) or len(data) < expected_len:
+            raise ValueError(
+                f"Invalid status payload length: expected >= {expected_len} bytes, "
+                f"got {len(data) if isinstance(data, (bytes, bytearray)) else type(data).__name__}"
+            )
         offset = 0
 
         def read_h():
@@ -378,7 +393,10 @@ class EVOController:
         pan: -100.0 (full left) to 100.0 (full right), 0.0 = center.
         Uses equal-power pan law (cos/sin).
         """
-        pan = max(-100.0, min(100.0, pan))
+        if not math.isfinite(float(volume_db)) or not math.isfinite(float(pan)):
+            raise ValueError(f"volume_db and pan must be finite numbers, got {volume_db!r}, {pan!r}")
+        volume_db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, float(volume_db)))
+        pan = max(-100.0, min(100.0, float(pan)))
         p = (pan + 100.0) / 200.0  # normalize to [0, 1]
         angle = p * (math.pi / 2)
         l_lin = math.cos(angle)

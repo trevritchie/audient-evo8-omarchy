@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -108,6 +109,55 @@ def _notify(title: str, body: str, quiet: bool = False) -> None:
         pass
 
 
+def _parse_finite_float(val: str | float | int, name: str = "value") -> float:
+    try:
+        f = float(val)
+    except (ValueError, TypeError):
+        sys.exit(f"error: invalid numeric {name}: {val!r}")
+    if not math.isfinite(f):
+        sys.exit(f"error: {name} must be a finite number (got {val!r})")
+    return f
+
+
+def _parse_int(val: str | int, name: str = "value") -> int:
+    try:
+        if isinstance(val, str) and not re.fullmatch(r"[+-]?\d+", val.strip()):
+            raise ValueError
+        return int(val)
+    except (ValueError, TypeError):
+        sys.exit(f"error: invalid integer {name}: {val!r}")
+
+
+def _safe_float(val: object, default: float, lo: float | None = None, hi: float | None = None) -> float:
+    try:
+        if isinstance(val, bool):
+            return default
+        f = float(val)  # type: ignore[arg-type]
+        if not math.isfinite(f):
+            return default
+        if lo is not None:
+            f = max(lo, f)
+        if hi is not None:
+            f = min(hi, f)
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: object, default: int, lo: int | None = None, hi: int | None = None) -> int:
+    try:
+        if isinstance(val, bool):
+            return default
+        i = int(float(val))  # type: ignore[arg-type]
+        if lo is not None:
+            i = max(lo, i)
+        if hi is not None:
+            i = min(hi, i)
+        return i
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 def _load_prefs() -> dict:
     default = {
         "last_monitor_db": {"1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0},
@@ -117,25 +167,35 @@ def _load_prefs() -> dict:
     }
     if PREFS_FILE.exists():
         try:
-            loaded = json.loads(PREFS_FILE.read_text())
-            default.update(loaded)
+            loaded = cfg._read_json(PREFS_FILE)
+            raw_mon = loaded.get("last_monitor_db")
+            if isinstance(raw_mon, dict):
+                for ch in ("1", "2", "3", "4"):
+                    if ch in raw_mon:
+                        default["last_monitor_db"][ch] = _safe_float(
+                            raw_mon[ch], 0.0, _MIXER_DB_MIN, _MIXER_DB_MAX
+                        )
+            src = loaded.get("loopback_source")
+            if isinstance(src, str) and src in LOOPBACK_SOURCES:
+                default["loopback_source"] = src
+            last_src = loaded.get("last_active_loopback_source")
+            if isinstance(last_src, str) and last_src in LOOPBACK_SOURCES and last_src != "off":
+                default["last_active_loopback_source"] = last_src
+            default["loopback_level"] = _safe_int(loaded.get("loopback_level"), 100, 0, 150)
         except Exception:
             pass
     return default
 
 
 def _save_prefs(prefs: dict) -> None:
-    PREFS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PREFS_FILE.write_text(json.dumps(prefs, indent=2) + "\n")
+    try:
+        cfg._write_json(PREFS_FILE, prefs)
+    except OSError:
+        pass
 
 
 def _load_saved_hw_fallback() -> dict:
-    if SAVED_CFG_FILE.exists():
-        try:
-            return json.loads(SAVED_CFG_FILE.read_text())
-        except Exception:
-            pass
-    return {
+    default: dict = {
         "output1": {"volume": -32.5, "mute": False},
         "output2": {"volume": -32.5, "mute": False},
         "input1": {"gain": -8.0, "mute": False, "phantom": False},
@@ -143,6 +203,34 @@ def _load_saved_hw_fallback() -> dict:
         "input3": {"gain": -8.0, "mute": False, "phantom": False},
         "input4": {"gain": -8.0, "mute": False, "phantom": False},
     }
+    if SAVED_CFG_FILE.exists():
+        try:
+            loaded = cfg._read_json(SAVED_CFG_FILE)
+            for out_key in ("output1", "output2"):
+                sec = loaded.get(out_key)
+                if isinstance(sec, dict):
+                    default[out_key]["volume"] = _safe_float(
+                        sec.get("volume"),
+                        default[out_key]["volume"],
+                        EVO8.vol_db_min,
+                        EVO8.vol_db_max,
+                    )
+                    default[out_key]["mute"] = bool(sec.get("mute", False))
+            for idx in range(1, 5):
+                in_key = f"input{idx}"
+                sec = loaded.get(in_key)
+                if isinstance(sec, dict):
+                    default[in_key]["gain"] = _safe_float(
+                        sec.get("gain"),
+                        default[in_key]["gain"],
+                        EVO8.gain_db_min,
+                        EVO8.gain_db_max,
+                    )
+                    default[in_key]["mute"] = bool(sec.get("mute", False))
+                    default[in_key]["phantom"] = bool(sec.get("phantom", False))
+        except Exception:
+            pass
+    return default
 
 
 def _read_hw_status_safe(query_usb: bool = False) -> dict:
@@ -160,7 +248,7 @@ def _get_loopback_status(prefs: dict, fast: bool = False) -> dict:
         source_key = str(prefs.get("loopback_source", "main"))
         if source_key not in LOOPBACK_SOURCES:
             source_key = "main"
-        level_pct = int(prefs.get("loopback_level", 100))
+        level_pct = _safe_int(prefs.get("loopback_level", 100), 100, 0, 150)
         label = LOOPBACK_SOURCES[source_key][0]
         return {
             "loopback_on": source_key != "off",
@@ -187,7 +275,7 @@ def _get_loopback_status(prefs: dict, fast: bool = False) -> dict:
 
     vol_out = _run(["pactl", "get-source-volume", LOOPBACK_CAPTURE_NODE])
     m_vol = re.search(r"(\d+)%", vol_out)
-    level_pct = int(m_vol.group(1)) if m_vol else int(prefs.get("loopback_level", 100))
+    level_pct = int(m_vol.group(1)) if m_vol else _safe_int(prefs.get("loopback_level", 100), 100, 0, 150)
 
     if is_muted or active_src is None:
         source_key = "off" if active_src is None else active_src
@@ -208,8 +296,8 @@ def _get_loopback_status(prefs: dict, fast: bool = False) -> dict:
 def _apply_loopback(source_key: str, level_pct: int | None = None) -> tuple[str, int]:
     prefs = _load_prefs()
     if level_pct is None:
-        level_pct = int(prefs.get("loopback_level", 100))
-    level_pct = max(0, min(150, level_pct))
+        level_pct = _safe_int(prefs.get("loopback_level", 100), 100, 0, 150)
+    level_pct = max(0, min(150, int(level_pct)))
 
     # 1. Disconnect all candidate sources from evo8_loopback_capture.hw
     for _, src_l, src_r in LOOPBACK_SOURCES.values():
@@ -317,37 +405,54 @@ def get_full_status(fast: bool = False) -> dict:
     inputs_list = []
     for i in range(1, 5):
         key = f"input{i}"
-        inp_hw = hw.get(key, {"gain": -8.0, "mute": False, "phantom": False})
+        inp_hw = hw.get(key)
+        if not isinstance(inp_hw, dict):
+            inp_hw = {"gain": -8.0, "mute": False, "phantom": False}
         m0 = mix0["inputs"].get(key, {"volume": -128.0, "pan": 0.0})
         m1 = mix1["inputs"].get(key, {"volume": -128.0, "pan": 0.0})
-        vol_db = float(m0.get("volume", -128.0))
+        vol_db = _safe_float(m0.get("volume", -128.0), -128.0, _MIXER_DB_MIN, _MIXER_DB_MAX)
         mon_on = vol_db > -100.0
-        saved_db = float(prefs.get("last_monitor_db", {}).get(str(i), 0.0))
+        last_mon_dict = prefs.get("last_monitor_db")
+        saved_db = _safe_float(
+            last_mon_dict.get(str(i), 0.0) if isinstance(last_mon_dict, dict) else 0.0,
+            0.0,
+            _MIXER_DB_MIN,
+            _MIXER_DB_MAX,
+        )
         inputs_list.append(
             {
                 "index": i,
                 "key": key,
-                "gain": float(inp_hw["gain"]),
-                "mute": bool(inp_hw["mute"]),
-                "phantom": bool(inp_hw["phantom"]),
+                "gain": _safe_float(inp_hw.get("gain"), -8.0, EVO8.gain_db_min, EVO8.gain_db_max),
+                "mute": bool(inp_hw.get("mute", False)),
+                "phantom": bool(inp_hw.get("phantom", False)),
                 "monitor_on": mon_on,
                 "monitor_db": vol_db if mon_on else saved_db,
                 "raw_mixer_db": vol_db,
-                "monitor_pan": float(m0.get("pan", 0.0)),
-                "mix34_on": float(m1.get("volume", -128.0)) > -100.0,
-                "mix34_db": float(m1.get("volume", -128.0)),
+                "monitor_pan": _safe_float(m0.get("pan", 0.0), 0.0, -100.0, 100.0),
+                "mix34_on": _safe_float(m1.get("volume", -128.0), -128.0) > -100.0,
+                "mix34_db": _safe_float(m1.get("volume", -128.0), -128.0, _MIXER_DB_MIN, _MIXER_DB_MAX),
             }
         )
 
-    out12_db = float(mix0["outputs"].get("output1_2", {}).get("volume", 0.0))
-    out34_db = float(mix1["outputs"].get("output3_4", {}).get("volume", 0.0))
-    loop_db = float(mix0["outputs"].get("output5_6", {}).get("volume", 0.0))
+    out12_db = _safe_float(mix0["outputs"].get("output1_2", {}).get("volume", 0.0), 0.0, _MIXER_DB_MIN, _MIXER_DB_MAX)
+    out34_db = _safe_float(mix1["outputs"].get("output3_4", {}).get("volume", 0.0), 0.0, _MIXER_DB_MIN, _MIXER_DB_MAX)
+    loop_db = _safe_float(mix0["outputs"].get("output5_6", {}).get("volume", 0.0), 0.0, _MIXER_DB_MIN, _MIXER_DB_MAX)
+
+    o1 = hw.get("output1") if isinstance(hw.get("output1"), dict) else {"volume": -20.0, "mute": False}
+    o2 = hw.get("output2") if isinstance(hw.get("output2"), dict) else {"volume": -20.0, "mute": False}
 
     return {
         "connected": True,
         **clock,
-        "output1": hw.get("output1", {"volume": -20.0, "mute": False}),
-        "output2": hw.get("output2", {"volume": -20.0, "mute": False}),
+        "output1": {
+            "volume": _safe_float(o1.get("volume"), -20.0, EVO8.vol_db_min, EVO8.vol_db_max),
+            "mute": bool(o1.get("mute", False)),
+        },
+        "output2": {
+            "volume": _safe_float(o2.get("volume"), -20.0, EVO8.vol_db_min, EVO8.vol_db_max),
+            "mute": bool(o2.get("mute", False)),
+        },
         "inputs": inputs_list,
         "pc12_db": out12_db,
         "pc34_db": out34_db,
@@ -398,14 +503,14 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_buffer(args: argparse.Namespace) -> None:
-    val = args.size.lower()
+    val = args.size.strip().lower()
     if val in ("auto", "0", "reset"):
         _run(["pw-metadata", "-n", "settings", "0", "clock.force-quantum", "0"])
         st = _get_pipewire_clock()
         _notify("Buffer Size: Auto", f"Active: {st['quantum']} samples ({st['latency_ms']} ms)", args.quiet)
         return
 
-    q = int(val)
+    q = _parse_int(val, "buffer size")
     if q < 16 or q > 8192:
         sys.exit("error: buffer size must be between 16 and 8192 samples (or 'auto')")
     _run(["pw-metadata", "-n", "settings", "0", "clock.force-quantum", str(q)])
@@ -414,14 +519,14 @@ def cmd_buffer(args: argparse.Namespace) -> None:
 
 
 def cmd_rate(args: argparse.Namespace) -> None:
-    val = args.hz.lower()
+    val = args.hz.strip().lower()
     if val in ("auto", "0", "reset"):
         _run(["pw-metadata", "-n", "settings", "0", "clock.force-rate", "0"])
         st = _get_pipewire_clock()
         _notify("Sample Rate: Auto", f"Active: {st['rate']} Hz", args.quiet)
         return
 
-    hz = int(val)
+    hz = _parse_int(val, "sample rate")
     if hz not in (44100, 48000, 88200, 96000):
         sys.exit("error: rate must be 44100, 48000, 88200, 96000, or 'auto'")
     _run(["pw-metadata", "-n", "settings", "0", "clock.force-rate", str(hz)])
@@ -430,7 +535,7 @@ def cmd_rate(args: argparse.Namespace) -> None:
 
 
 def cmd_monitor(args: argparse.Namespace) -> None:
-    ch = int(args.input_num)
+    ch = _parse_int(args.input_num, "input_num")
     if not 1 <= ch <= 4:
         sys.exit("error: input_num must be 1..4")
 
@@ -439,28 +544,37 @@ def cmd_monitor(args: argparse.Namespace) -> None:
     mix_targets = [0, 1] if args.mix == "both" else [int(args.mix)]
 
     cur_sec = cfg.mixer_section_state(mixer, EVO8, f"input{ch}", mix_targets[0])
-    cur_vol = float(cur_sec.get("volume", -128.0))
-    cur_pan = float(cur_sec.get("pan", 0.0)) if args.pan is None else float(args.pan)
+    cur_vol = _safe_float(cur_sec.get("volume", -128.0), -128.0, _MIXER_DB_MIN, _MIXER_DB_MAX)
+    if args.pan is None:
+        cur_pan = _safe_float(cur_sec.get("pan", 0.0), 0.0, -100.0, 100.0)
+    else:
+        cur_pan = max(-100.0, min(100.0, _parse_finite_float(args.pan, "pan")))
 
-    val_str = args.state.lower()
+    val_str = args.state.strip().lower()
+    last_mon_map = prefs.get("last_monitor_db")
+    if not isinstance(last_mon_map, dict):
+        last_mon_map = {"1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0}
+        prefs["last_monitor_db"] = last_mon_map
+    saved_ch_db = _safe_float(last_mon_map.get(str(ch), 0.0), 0.0, _MIXER_DB_MIN, _MIXER_DB_MAX)
+
     if val_str == "toggle":
         target_on = cur_vol <= -100.0
-        target_db = float(prefs.get("last_monitor_db", {}).get(str(ch), 0.0)) if target_on else _MIXER_DB_MIN
+        target_db = (saved_ch_db if saved_ch_db > -100.0 else 0.0) if target_on else _MIXER_DB_MIN
     elif val_str == "on":
         if args.db is not None:
-            target_db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, float(args.db)))
-            prefs.setdefault("last_monitor_db", {})[str(ch)] = target_db
+            parsed_db = _parse_finite_float(args.db, "monitor dB")
+            target_db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, parsed_db))
+            last_mon_map[str(ch)] = target_db
             _save_prefs(prefs)
         else:
-            target_db = float(prefs.get("last_monitor_db", {}).get(str(ch), 0.0))
-            if target_db <= -100.0:
-                target_db = 0.0
+            target_db = saved_ch_db if saved_ch_db > -100.0 else 0.0
     elif val_str == "off":
         target_db = _MIXER_DB_MIN
     else:
-        target_db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, float(val_str)))
+        parsed_db = _parse_finite_float(val_str, "monitor level")
+        target_db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, parsed_db))
         if target_db > -100.0:
-            prefs.setdefault("last_monitor_db", {})[str(ch)] = target_db
+            last_mon_map[str(ch)] = target_db
             _save_prefs(prefs)
 
     for mo in mix_targets:
@@ -481,17 +595,24 @@ def cmd_monitor(args: argparse.Namespace) -> None:
 
 def _update_saved_hw_cfg(section: str, field: str, value: float | bool) -> None:
     data = _load_saved_hw_fallback()
-    data.setdefault(section, {})[field] = value
+    sec = data.get(section)
+    if not isinstance(sec, dict):
+        sec = {}
+        data[section] = sec
+    sec[field] = value
     mixer = cfg.load_or_default_mixer_state(EVO8)
     data["mixer"] = mixer
-    SAVED_CFG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SAVED_CFG_FILE.write_text(json.dumps(data, indent=2) + "\n")
+    try:
+        cfg._write_json(SAVED_CFG_FILE, data)
+    except OSError:
+        pass
 
 
 def cmd_gain(args: argparse.Namespace) -> None:
-    ch = int(args.input_num)
+    ch = _parse_int(args.input_num, "input_num")
     target = f"input{ch}"
-    db = max(EVO8.gain_db_min, min(EVO8.gain_db_max, float(args.db)))
+    raw_db = _parse_finite_float(args.db, "gain dB")
+    db = max(EVO8.gain_db_min, min(EVO8.gain_db_max, raw_db))
     _update_saved_hw_cfg(target, "gain", db)
     try:
         with EVOController(EVO8) as evo:
@@ -546,8 +667,9 @@ def cmd_mute(args: argparse.Namespace) -> None:
 
 
 def cmd_volume(args: argparse.Namespace) -> None:
-    pair = int(args.pair) - 1
-    db = max(EVO8.vol_db_min, min(EVO8.vol_db_max, float(args.db)))
+    pair = _parse_int(args.pair, "pair") - 1
+    raw_db = _parse_finite_float(args.db, "volume dB")
+    db = max(EVO8.vol_db_min, min(EVO8.vol_db_max, raw_db))
     _update_saved_hw_cfg(f"output{pair + 1}", "volume", db)
     try:
         with EVOController(EVO8) as evo:
@@ -592,9 +714,10 @@ def cmd_loopback(args: argparse.Namespace) -> None:
 
 
 def cmd_pcmix(args: argparse.Namespace) -> None:
-    pair = int(args.pair) - 1
-    mix_out = pair if args.mix is None else int(args.mix)
-    db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, float(args.db)))
+    pair = _parse_int(args.pair, "pair") - 1
+    mix_out = pair if args.mix is None else _parse_int(args.mix, "mix")
+    raw_db = _parse_finite_float(args.db, "pcmix dB")
+    db = max(_MIXER_DB_MIN, min(_MIXER_DB_MAX, raw_db))
     mixer = cfg.load_or_default_mixer_state(EVO8)
     cfg.update_mixer_output_state(mixer, EVO8, pair, db, -100.0, 100.0, mix_output=mix_out)
     cfg.save_mixer_state(EVO8.name, mixer)
