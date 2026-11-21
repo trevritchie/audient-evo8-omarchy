@@ -26,6 +26,9 @@ done
 
 if ! pactl list cards short 2>/dev/null | grep -q "$CARD"; then
     echo "EVO 8 not connected ($CARD not found)."
+    if command -v omarchy-shell >/dev/null 2>&1; then
+        omarchy-shell -q tbird.evo8 refresh 2>/dev/null || true
+    fi
     exit 0
 fi
 
@@ -79,3 +82,8 @@ if [[ -n "${ee_id:-}" ]]; then
 fi
 
 echo "Default sink: $SINK | Default source: $(pactl get-default-source 2>/dev/null || echo 'none')"
+
+# 7. Notify Omarchy bar widget to refresh status immediately
+if command -v omarchy-shell >/dev/null 2>&1; then
+    omarchy-shell -q tbird.evo8 refresh 2>/dev/null || true
+fi

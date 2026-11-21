@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.Pipewire
 import qs.Commons
 import qs.Ui
 
@@ -9,6 +10,43 @@ Panel {
   id: root
   moduleName: "tbird.evo8"
   ipcTarget: "tbird.evo8"
+  manageIpc: false
+
+  ShellIpc {
+    target: root.ipcTarget
+
+    function open(): void { if (root.connected) root.open() }
+    function close(): void { root.close() }
+    function show(): void { if (root.connected) root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { if (root.connected) root.toggle() }
+    function refresh(): void { root.refresh() }
+  }
+
+  readonly property var pwNodes: Pipewire.nodes ? Pipewire.nodes.values : []
+  readonly property bool evoNodePresent: {
+    for (var i = 0; i < pwNodes.length; i++) {
+      var n = pwNodes[i]
+      if (n && n.name && (n.name.indexOf("EVO8") !== -1 || n.name.indexOf("evo8_") === 0)) return true
+    }
+    return false
+  }
+
+  onEvoNodePresentChanged: {
+    if (!evoNodePresent) {
+      root.connected = false
+      if (root.opened) root.close()
+    }
+    root.refresh()
+  }
+
+  visible: root.connected
+  implicitWidth: root.connected ? button.implicitWidth : 0
+  implicitHeight: root.connected ? button.implicitHeight : 0
+
+  onConnectedChanged: {
+    if (!connected && opened) root.close()
+  }
 
   property string evoBin: Quickshell.env("HOME") + "/.local/bin/evo8-audio"
   property bool connected: false
@@ -83,7 +121,10 @@ Panel {
     try {
       var data = JSON.parse(raw)
       root.connected = !!data.connected
-      if (!root.connected) return
+      if (!root.connected) {
+        if (root.opened) root.close()
+        return
+      }
       root.rate = data.rate || 48000
       root.forceRate = data.force_rate || 0
       root.quantum = data.quantum || 1024
@@ -174,7 +215,7 @@ Panel {
   }
 
   Timer {
-    interval: 15000
+    interval: root.connected ? 15000 : 2500
     running: !root.opened
     repeat: true
     triggeredOnStart: true
@@ -185,6 +226,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
+    visible: root.connected
     text: root.anyMonitorOn ? "󰤽" : "󰤽"
     opacity: root.connected ? 1.0 : 0.45
     tooltipText: root.connected
